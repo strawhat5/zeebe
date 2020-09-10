@@ -150,25 +150,7 @@ public class UpgradeTest {
                 .createInstance()
                 .afterUpgrade(
                     (state, wfKey, key) -> {
-                      TestUtil.waitUntil(() -> state.hasElementInState(JOB, "CREATED"));
-
-                      final var jobsResponse =
-                          state
-                              .client()
-                              .newActivateJobsCommand()
-                              .jobType(TASK)
-                              .maxJobsToActivate(1)
-                              .send()
-                              .join();
-                      assertThat(jobsResponse.getJobs()).hasSize(1);
-
-                      TestUtil.waitUntil(() -> state.hasElementInState(JOB, "ACTIVATED"));
-
-                      state
-                          .client()
-                          .newCompleteCommand(jobsResponse.getJobs().get(0).getKey())
-                          .send()
-                          .join();
+                      activateJob(state);
                       TestUtil.waitUntil(
                           () -> state.hasLogContaining(CHILD_PROCESS_ID, "COMPLETED"));
                     })
