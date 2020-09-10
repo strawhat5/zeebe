@@ -150,7 +150,8 @@ public class UpgradeTest {
                 .createInstance()
                 .afterUpgrade(
                     (state, wfKey, key) -> {
-                      activateJob(state);
+                      final var jobKey = activateJob(state);
+                      completeJob(state, wfKey, jobKey);
                       TestUtil.waitUntil(
                           () -> state.hasLogContaining(CHILD_PROCESS_ID, "COMPLETED"));
                     })
