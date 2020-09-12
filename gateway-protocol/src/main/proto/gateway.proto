@@ -226,6 +226,7 @@ message PublishMessageRequest {
 }
 
 message PublishMessageResponse {
+  int64 key = 1;
 }
 
 message ResolveIncidentRequest {

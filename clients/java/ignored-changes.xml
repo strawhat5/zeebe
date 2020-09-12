@@ -28,4 +28,9 @@
     <method>ZeebeClientCredentials(java.lang.String, long, java.lang.String, java.lang.String)</method>
     <differenceType>7004</differenceType>
   </difference>
+  <difference>
+    <className>io/zeebe/client/api/response/PublishMessageResponse</className>
+    <method>long messageKey()</method>
+    <differenceType>7012</differenceType>
+  </difference>
 </differences>
