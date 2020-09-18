@@ -11,9 +11,9 @@ import io.zeebe.db.DbContext;
 import io.zeebe.db.TransactionOperation;
 import io.zeebe.db.ZeebeDbTransaction;
 import io.zeebe.engine.processing.streamprocessor.writers.NoopResponseWriter;
-import io.zeebe.engine.processing.streamprocessor.writers.NoopTypedStreamWriter;
+import io.zeebe.engine.processing.streamprocessor.writers.ReprocessingStreamWriter;
+import io.zeebe.engine.processing.streamprocessor.writers.ReprocessingStreamWriter.ReprocessingRecord;
 import io.zeebe.engine.processing.streamprocessor.writers.TypedResponseWriter;
-import io.zeebe.engine.processing.streamprocessor.writers.TypedStreamWriter;
 import io.zeebe.engine.state.ZeebeState;
 import io.zeebe.logstreams.impl.Loggers;
 import io.zeebe.logstreams.log.LogStreamReader;
@@ -31,6 +31,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 
 /**
@@ -99,7 +100,7 @@ public final class ReProcessingStateMachine {
 
   private final EventFilter eventFilter;
   private final LogStreamReader logStreamReader;
-  private final TypedStreamWriter noopstreamWriter = new NoopTypedStreamWriter();
+  private final ReprocessingStreamWriter reprocessingStreamWriter = new ReprocessingStreamWriter();
   private final TypedResponseWriter noopResponseWriter = new NoopResponseWriter();
 
   private final DbContext dbContext;
@@ -228,6 +229,12 @@ public final class ReProcessingStateMachine {
         reprocessEvent(currentEvent);
       } else {
         onRecordReprocessed(currentEvent);
+
+        // ignore records that are not processed
+        reprocessingStreamWriter.reprocessingRecords.removeIf(
+            r ->
+                r.getKey() == currentEvent.getKey()
+                    && r.getSourceRecordPosition() == currentEvent.getSourceEventPosition());
       }
 
     } catch (final RuntimeException e) {
@@ -250,6 +257,13 @@ public final class ReProcessingStateMachine {
 
     if (eventProcessor == null) {
       onRecordReprocessed(currentEvent);
+
+      // ignore records that are not processed
+      reprocessingStreamWriter.reprocessingRecords.removeIf(
+          r ->
+              r.getKey() == currentEvent.getKey()
+                  && r.getSourceRecordPosition() == currentEvent.getSourceEventPosition());
+
       return;
     }
 
@@ -257,7 +271,85 @@ public final class ReProcessingStateMachine {
         recordValues.readRecordValue(currentEvent, metadata.getValueType());
     typedEvent.wrap(currentEvent, metadata, value);
 
+    checkRecordForReprocessingIssues(typedEvent);
+
+    reprocessingStreamWriter.configureSourceContext(currentEvent.getPosition());
     processUntilDone(currentEvent.getPosition(), typedEvent);
+  }
+
+  private void checkRecordForReprocessingIssues(final TypedRecord<?> record) {
+
+    final var key = record.getKey();
+    final var sourceRecordPosition = record.getSourceRecordPosition();
+    final var intent = record.getIntent();
+
+    // TODO (saig0): ignore record with source position < snapshot position
+
+    if (sourceRecordPosition < 0) {
+      // ignore commands
+      return;
+    }
+
+    final var reprocessingRecord =
+        reprocessingStreamWriter.reprocessingRecords.stream()
+            .filter(r -> r.getSourceRecordPosition() == sourceRecordPosition)
+            .findFirst()
+            .orElseThrow(
+                () ->
+                    new RuntimeException(
+                        String.format(
+                            "Reprocessing issue detected! Found record but was not created on reprocessing. [source-record-position: %d, key: %d, actual-record-value: %s]",
+                            sourceRecordPosition, key, record.getValue())));
+
+    if (reprocessingRecord.getKey() > 0 && reprocessingRecord.getKey() != key) {
+      throw new RuntimeException(
+          String.format(
+              "Reprocessing issue detected! Expected record key <%d> but was <%d>. [source-record-position: %d, actual-record-value: %s]",
+              reprocessingRecord.getKey(), key, sourceRecordPosition, record.getValue()));
+    }
+
+    if (reprocessingRecord.getIntent() != intent) {
+      throw new RuntimeException(
+          String.format(
+              "Reprocessing issue detected! Expected record intent <%s> but was <%s>. [source-record-position: %d, key: %d, actual-record-value: %s]",
+              reprocessingRecord.getIntent(),
+              intent,
+              sourceRecordPosition,
+              key,
+              record.getValue()));
+    }
+
+    LOG.info(
+        "Record was reprocessed successfully. [source-record-position: {}, key: {}, intent: {}, actual-record-value: {}]",
+        sourceRecordPosition,
+        intent,
+        key,
+        record.getValue());
+
+    reprocessingStreamWriter.reprocessingRecords.remove(reprocessingRecord);
+
+    final var missingRecords =
+        reprocessingStreamWriter.reprocessingRecords.stream()
+            .filter(r -> r.getSourceRecordPosition() < sourceRecordPosition)
+            .collect(Collectors.toList());
+
+    if (!missingRecords.isEmpty()) {
+      throw new RuntimeException(
+          String.format(
+              "Missing %d records on log stream. [source-record-position: %d, key: %d, intent: %s, actual-record-value: %s]%n%s",
+              missingRecords.size(),
+              sourceRecordPosition,
+              key,
+              intent,
+              record.getValue(),
+              missingRecords.stream()
+                  .map(ReprocessingRecord::toString)
+                  .collect(Collectors.joining("\n"))));
+    }
+
+    // TODO (saig0): check if every record is reprocessed
+
+    // TODO (saig0): check all records that are created on reprocessing
   }
 
   private void processUntilDone(final long position, final TypedRecord<?> currentEvent) {
@@ -301,7 +393,7 @@ public final class ReProcessingStateMachine {
                   position,
                   typedEvent,
                   noopResponseWriter,
-                  noopstreamWriter,
+                  reprocessingStreamWriter,
                   NOOP_SIDE_EFFECT_CONSUMER);
             }
             zeebeState.markAsProcessed(position);
