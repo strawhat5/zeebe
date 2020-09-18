@@ -102,6 +102,36 @@ public class UpgradeTest {
                 .done()
           },
           {
+            "message event sub-process",
+            scenario()
+                .deployWorkflow(
+                    Bpmn.createExecutableProcess(PROCESS_ID)
+                        .eventSubProcess(
+                            "event-subprocess",
+                            eventSubProcess ->
+                                eventSubProcess
+                                    .startEvent()
+                                    .message(
+                                        m -> m.name(MESSAGE).zeebeCorrelationKeyExpression("key"))
+                                    .interrupting(false)
+                                    .endEvent())
+                        .startEvent()
+                        .serviceTask(TASK, t -> t.zeebeJobType(TASK))
+                        .endEvent()
+                        .done())
+                .createInstance(Map.of("key", "123"))
+                .beforeUpgrade(
+                    state -> {
+                      publishMessage(state, -1L, -1L);
+
+                      state.hasElementInState("event-subprocess", "COMPLETED");
+
+                      return activateJob(state);
+                    })
+                .afterUpgrade(UpgradeTest::completeJob)
+                .done()
+          },
+          {
             "timer",
             scenario()
                 .deployWorkflow(timerWorkflow())
@@ -272,6 +302,7 @@ public class UpgradeTest {
         .messageName(MESSAGE)
         .correlationKey("123")
         .timeToLive(Duration.ofMinutes(5))
+        .variables(Map.of("x", 1))
         .send()
         .join();
 
