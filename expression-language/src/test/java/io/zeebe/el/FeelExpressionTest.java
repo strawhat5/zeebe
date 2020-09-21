@@ -10,6 +10,9 @@ package io.zeebe.el;
 import static io.zeebe.test.util.MsgPackUtil.asMsgPack;
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.zeebe.util.sched.clock.ControlledActorClock;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import org.junit.Test;
@@ -18,8 +21,10 @@ public class FeelExpressionTest {
 
   private static final EvaluationContext EMPTY_CONTEXT = name -> null;
 
+  private final ControlledActorClock clock = new ControlledActorClock();
+
   private final ExpressionLanguage expressionLanguage =
-      ExpressionLanguageFactory.createExpressionLanguage();
+      ExpressionLanguageFactory.createExpressionLanguage(clock);
 
   @Test
   public void stringLiteral() {
@@ -155,6 +160,30 @@ public class FeelExpressionTest {
 
     assertThat(evaluationResult.getType()).isEqualTo(ResultType.ARRAY);
     assertThat(evaluationResult.getList()).isEqualTo(List.of(asMsgPack("1"), asMsgPack("2")));
+  }
+
+  @Test
+  public void getCurrentTime() {
+    final var localDateTime = LocalDateTime.parse("2020-09-21T07:20:00");
+    final var now = localDateTime.atZone(ZoneId.systemDefault());
+    clock.setCurrentTime(now.toInstant());
+
+    final var evaluationResult = evaluateExpression("now()", EMPTY_CONTEXT);
+
+    assertThat(evaluationResult.getType()).isEqualTo(ResultType.DATE_TIME);
+    assertThat(evaluationResult.getDateTime()).isEqualTo(now);
+  }
+
+  @Test
+  public void getCurrentDate() {
+    final var localDateTime = LocalDateTime.parse("2020-09-21T07:20:00");
+    final var now = localDateTime.atZone(ZoneId.systemDefault());
+    clock.setCurrentTime(now.toInstant());
+
+    final var evaluationResult = evaluateExpression("string(today())", EMPTY_CONTEXT);
+
+    assertThat(evaluationResult.getType()).isEqualTo(ResultType.STRING);
+    assertThat(evaluationResult.getString()).isEqualTo(now.toLocalDate().toString());
   }
 
   private EvaluationResult evaluateExpression(
